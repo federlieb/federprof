@@ -6,54 +6,8 @@
 % LD_PRELOAD=.../libfederprof.so sqlite3 ...
 ...
 % python3 federprof.py
-╭───────────┬─────────────────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ sum(took… │ stats                               │ sql+eqp                                                                                                 │
-├───────────┼─────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│           │                                     │ ┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐ │
-│           │                                     │ │                                                                                                     │ │
-│           │                                     │ │                                                                                                     │ │
-│           │                                     │ │ with rem as materialized (                                                                          │ │
-│           │                                     │ │   select nfatrans.id                                                                                │ │
-│           │                                     │ │   from json_each(?1) each                                                                           │ │
-│           │                                     │ │   cross join nfastate on nfastate.state = each.value                                                │ │
-│           │                                     │ │   cross join nfatrans on nfatrans.dst = nfastate.id                                                 │ │
-│           │                                     │ │                                                                                                     │ │
-│           │                                     │ │   union                                                                                             │ │
-│           │                                     │ │                                                                                                     │ │
-│           │                                     │ │   select nfatrans.id                                                                                │ │
-│           │                                     │ │   from json_each(?2) each                                                                           │ │
-│           │ ┌────────────────────┬────────────┐ │ │   cross join nfastate on nfastate.state = each.value                                                │ │
-│           │ │ sum(vm_step)       │ 37,260     │ │ │   cross join nfatrans on nfatrans.src = nfastate.id                                                 │ │
-│           │ │ sum(ncycle)        │ 20,757,261 │ │ │                                                                                                     │ │
-│           │ │ sum(run)           │ 365        │ │ │   union                                                                                             │ │
-│           │ │ sum(fullscan_step) │ 0.00       │ │ │                                                                                                     │ │
-│           │ │ sum(sort)          │ 0.00       │ │ │   select nfatrans.id from nfatrans where dst is null                                                │ │
-│           │ │ sum(autoindex)     │ 0.00       │ │ │ )                                                                                                   │ │
-│           │ │ sum(reprepare)     │ 0.00       │ │ │ delete from nfatrans indexed by idx_nfatrans_id where nfatrans.id in (select id from rem)           │ │
-│    0.01   │ │ sum(filter_miss)   │ 0.00       │ │ │                                                                                                     │ │
-│           │ │ sum(filter_hit)    │ 0.00       │ │ │                                                                                                     │ │
-│           │ │ avg(memused)       │ 15950.38   │ │ │                                                                                                     │ │
-│           │ │ sum(nvisit)        │ -365       │ │ │      ncycle_p     nvisit_p   explain                                                                │ │
-│           │ │ sum(est)           │ 373771.25  │ │ │  ─────────────────────────────────────────────────────────────────────────────────────────────────  │ │
-│           │ │ sum(nloop)         │ 365        │ │ │          None         None   LIST SUBQUERY 4   est=365                                              │ │
-│           │ │ sum(took_seconds)  │ 0.01       │ │ │        59.86%         None     MATERIALIZE rem   est=365                                            │ │
-│           │ └────────────────────┴────────────┘ │ │          None         None       COMPOUND QUERY   est=365                                           │ │
-│           │                                     │ │          None         None         LEFT-MOST SUBQUERY   est=365                                     │ │
-│           │                                     │ │        10.28%       20.00%           SCAN each VIRTUAL TABLE INDEX 1:   nloop=365 nvisit=365 est…   │ │
-│           │                                     │ │         6.32%       20.00%           SEARCH nfastate USING COVERING INDEX sqlite_autoindex_nfast…   │ │
-│           │                                     │ │         3.46%       20.00%           SEARCH nfatrans USING COVERING INDEX idx_nfatrans_dst (dst=…   │ │
-│           │                                     │ │          None         None         UNION USING TEMP B-TREE   est=365                                │ │
-│           │                                     │ │         2.48%        0.00%           SCAN each VIRTUAL TABLE INDEX 1:   nloop=365 est=8,760         │ │
-│           │                                     │ │         0.44%        0.00%           SEARCH nfastate USING COVERING INDEX sqlite_autoindex_nfast…   │ │
-│           │                                     │ │         0.38%        0.00%           SEARCH nfatrans USING COVERING INDEX sqlite_autoindex_nfatr…   │ │
-│           │                                     │ │          None         None         UNION USING TEMP B-TREE   est=365                                │ │
-│           │                                     │ │         1.80%        0.00%           SEARCH nfatrans USING COVERING INDEX idx_nfatrans_dst (dst=…   │ │
-│           │                                     │ │         8.05%       20.00%     SCAN rem   nloop=365 nvisit=365 est=321,208                          │ │
-│           │                                     │ │         6.94%       20.00%   SEARCH nfatrans USING INDEX idx_nfatrans_id (id=?)   nloop=365 nvis…   │ │
-│           │                                     │ │                                                                                                     │ │
-│           │                                     │ └─────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
-╰───────────┴─────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
+![screenshot showing sql with query plan and statistics](screenshot.png?raw=true)
 
 ### Compile SQLite as shared library
 
