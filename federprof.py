@@ -77,25 +77,35 @@ create or replace macro plan_agg(plans) as (
 result = duckdb.sql(
     query="""
 
+with base as (
 select
     cast(sum(vm_step) as int128) as "sum(vm_step)",
     cast(sum(run) as int128) as "sum(run)",
-    -- sum(list_aggregate(list_transform(scanstatus, x -> x.nvisit), 'sum')) as sum_nvisit,
-    1.0e-9 * sum(took_ns) as took_s,
-    sum(list_aggregate(list_transform(scanstatus, x -> x.ncycle), 'sum')) as sum_ncycle,
+    sum(took_ns) * 1.0e-9 as "sum(took_seconds)",
+    sum(list_aggregate(list_transform(scanstatus, x -> x.nvisit), 'sum')) as "sum(nvisit)",
+    sum(list_aggregate(list_transform(scanstatus, x -> x.ncycle), 'sum')) as "sum(ncycle)",
+    sum(list_aggregate(list_transform(scanstatus, x -> x.est), 'sum')) as "sum(est)",
+    sum(list_aggregate(list_transform(scanstatus, x -> x.nloop), 'sum')) as "sum(nloop)",
     plan_md5(scanstatus) as plan,
     unexpanded,
-    to_json(plan_agg(list(scanstatus))),
-    -- max(timestamp)
+    to_json(plan_agg(list(scanstatus))) as scanstatus,
+    sum(fullscan_step),
+    sum(sort),
+    sum(autoindex),
+    sum(reprepare),
+    sum(filter_miss),
+    sum(filter_hit),
+    avg(memused),
 from
     read_ndjson_auto('logfile.gz')
 group by
     unexpanded,
     plan
 order by
-    1 desc nulls last
-limit 10
-    
+    "sum(took_seconds)" desc nulls last
+limit 40
+)
+select * from base order by "sum(took_seconds)" asc nulls first
     """,
     connection=db,
 )
@@ -150,9 +160,13 @@ def scanstatus_to_table(ss):
             details += f" nvisit={to_rich(int(cell['nvisit']))}"
 
         if cell.get("est"):
-            details += f" est={to_rich(cell['est'])}"
+            details += f" est={to_rich(int(cell['est']))}"
 
         cell["explain"].append(details, style="dim")
+
+        for k, v in cell.items():
+            if v is None:
+                cell[k] = 'None'
 
     order = [
         # "idx",
@@ -170,9 +184,7 @@ def scanstatus_to_table(ss):
     for col in order:
         t.add_column(col)
 
-    for node in sorted(
-        data, key=lambda y: (y.get("posz"), y.get("posx"), y.get("posy"))
-    ):
+    for node in sorted(data, key=lambda y: (y.get("posz"))):
         t.add_row(*[to_rich(node.get(x)) for x in order])
 
     t.columns[0].justify = "right"
@@ -188,13 +200,9 @@ def scanstatus_to_table(ss):
 t = Table(box=box.ROUNDED, show_lines=True, highlight=True)
 
 selection = (
-    "sum(vm_step)",
-    "sum(run)",
-    "took_s",
-    "sum_ncycle",
-    "plan",
-    "unexpanded",
-    "to_json(plan_agg(list(scanstatus)))",
+    "sum(took_seconds)",
+    "stats",
+    "sql+eqp",
 )
 
 for col in selection:
@@ -213,27 +221,46 @@ for row in result.fetchall():
         background_color="#1e1e1e",
     )
 
-    data["to_json(plan_agg(list(scanstatus)))"] = scanstatus_to_table(
-        data["to_json(plan_agg(list(scanstatus)))"]
+    data["scanstatus"] = scanstatus_to_table(
+        data["scanstatus"]
     )
+
+    sql_eqp = Table(show_header=False)
+    sql_eqp.add_row(data["unexpanded"])
+    sql_eqp.add_row(data["scanstatus"])
+
+    data["sql+eqp"] = sql_eqp
+
+    stats = Table(show_header=False)
+
+    sel2 = (
+        'sum(vm_step)',
+        'sum(ncycle)',
+        'sum(run)',
+        'sum(fullscan_step)',
+        'sum(sort)',
+        'sum(autoindex)',
+        'sum(reprepare)',
+        'sum(filter_miss)',
+        'sum(filter_hit)',
+        'avg(memused)',
+        'sum(nvisit)',
+        'sum(est)',
+        'sum(nloop)',
+        'sum(took_seconds)'
+    )
+
+    for h in sel2:
+        stats.add_row(h, data[h])
+
+    data["stats"] = stats
 
     t.add_row(*[data[k] for k in selection])
 
-
-del t.columns[4]
-
-# t.columns[4], t.columns[5] = t.columns[5], t.columns[4]
-
-t.columns[4].style = rich.style.Style(bgcolor="#1e1e1e")
-
-t.columns[4].vertical = "middle"
-t.columns[5].vertical = "middle"
-
-t.columns[5].min_width = 120
-
-for n in (0, 1, 2, 3):
-    t.columns[n].vertical = "middle"
-    t.columns[n].justify = "right"
-
+t.columns[2].style = rich.style.Style(bgcolor="#1e1e1e")
+t.columns[2].vertical = "middle"
+t.columns[1].vertical = "middle"
+t.columns[0].vertical = "middle"
+t.columns[0].justify = "center"
 
 Console().print(t)
