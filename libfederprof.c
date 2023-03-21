@@ -3,6 +3,22 @@
 //
 //   * could override `sqlite3_trace` and `sqlite3_trace_v2` so applications
 //     do not disable this profiler. But that might confuse them.
+//
+//   * if sqlite3_threadsafe, mutex when processing an event to avoid broken
+//     json lines?
+//
+//   * use kernel crypto to sha1 the SQLs and query plan for easier
+//     post-processing?
+//
+//   * Make the library executable so users would use it to spawn applications
+//     hosting SQLite, instead of having to fiddle with LD_PRELOAD on their
+//     own? So, `federprof ... -- sqlite3` would launch `sqlite3` with the
+//     environment set up properly, probably through exec?
+//
+//   * Give this an option to filter out INSERT statements? Add documentation
+//     how this could easily be done by adding a filter to the pipe command?
+// 
+//   * Similarily, options to omit some of the SQL texts.
 
 #include <sqlite3.h>
 
@@ -185,6 +201,8 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns)
 
   sqlite3_str_appendf(g_context.str, ",\"unexpanded\":\"");
   append_json_escaped(g_context.str, sqlite3_sql(stmt));
+
+#if 0
   sqlite3_str_appendf(g_context.str, "\",\"expanded\":\"");
 
   char* expanded = sqlite3_expanded_sql(stmt);
@@ -196,6 +214,7 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns)
 #ifdef SQLITE_ENABLE_NORMALIZE
   sqlite3_str_appendf(g_context.str, "\",\"normalized\":\"");
   append_json_escaped(g_context.str, sqlite3_normalized_sql(stmt));
+#endif
 #endif
 
   sqlite3_str_appendf(g_context.str, "\",\"scanstatus\":[");

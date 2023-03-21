@@ -78,34 +78,44 @@ result = duckdb.sql(
     query="""
 
 with base as (
-select
-    cast(sum(vm_step) as int128) as "sum(vm_step)",
-    cast(sum(run) as int128) as "sum(run)",
-    sum(took_ns) * 1.0e-9 as "sum(took_seconds)",
-    sum(list_aggregate(list_transform(scanstatus, x -> x.nvisit), 'sum')) as "sum(nvisit)",
-    sum(list_aggregate(list_transform(scanstatus, x -> x.ncycle), 'sum')) as "sum(ncycle)",
-    sum(list_aggregate(list_transform(scanstatus, x -> x.est), 'sum')) as "sum(est)",
-    sum(list_aggregate(list_transform(scanstatus, x -> x.nloop), 'sum')) as "sum(nloop)",
-    plan_md5(scanstatus) as plan,
-    unexpanded,
-    to_json(plan_agg(list(scanstatus))) as scanstatus,
-    sum(fullscan_step),
-    sum(sort),
-    sum(autoindex),
-    sum(reprepare),
-    sum(filter_miss),
-    sum(filter_hit),
-    avg(memused),
-from
-    read_ndjson_auto('logfile.gz')
-group by
-    unexpanded,
-    plan
-order by
-    "sum(took_seconds)" desc nulls last
-limit 40
+    select
+        cast(sum(vm_step) as int128) as "sum(vm_step)",
+        cast(sum(run) as int128) as "sum(run)",
+        sum(took_ns) * 1.0e-9 as "sum(took_seconds)",
+        sum(list_aggregate(list_transform(scanstatus, x -> x.nvisit), 'sum'))
+            as "sum(nvisit)",
+        sum(list_aggregate(list_transform(scanstatus, x -> x.ncycle), 'sum'))
+            as "sum(ncycle)",
+        sum(list_aggregate(list_transform(scanstatus, x -> x.est), 'sum'))
+            as "sum(est)",
+        sum(list_aggregate(list_transform(scanstatus, x -> x.nloop), 'sum'))
+            as "sum(nloop)",
+        plan_md5(scanstatus) as plan,
+        unexpanded,
+        to_json(plan_agg(list(scanstatus))) as scanstatus,
+        sum(fullscan_step),
+        sum(sort),
+        sum(autoindex),
+        sum(reprepare),
+        sum(filter_miss),
+        sum(filter_hit),
+        avg(memused),
+    from
+        read_ndjson_auto('logfile.gz')
+    group by
+        unexpanded,
+        plan
+    order by
+        "sum(vm_step)" desc nulls last
+    limit 40
 )
-select * from base order by "sum(took_seconds)" asc nulls first
+select
+    *
+from
+    base
+order by
+    "sum(vm_step)" asc nulls first
+
     """,
     connection=db,
 )
