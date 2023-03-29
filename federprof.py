@@ -1,3 +1,5 @@
+# TODO: error handling if no queries are executed.
+
 import duckdb
 import rich
 from rich.table import Table
@@ -101,7 +103,9 @@ with base as (
         sum(filter_hit),
         avg(memused),
     from
-        read_ndjson_auto('logfile.gz')
+        read_ndjson_auto('logfile.gz', ignore_errors=true)
+    where
+        event = 2
     group by
         unexpanded,
         plan

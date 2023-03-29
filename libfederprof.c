@@ -147,7 +147,7 @@ append_json_escaped(sqlite3_str* str, char const* s)
 }
 
 int
-record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns)
+record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns, int event)
 {
 
   int reset = 1;
@@ -169,6 +169,7 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns)
     "{"
     "\"session\":\"%s\""
     ",\"counter\":%lld"
+    ",\"event\":%u"
     ",\"db_ptr\":%llu"
     ",\"stmt_ptr\":%llu"
     ",\"timestamp\":%llu.%09llu"
@@ -184,6 +185,7 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns)
     ",\"took_ns\":%llu",
     g_context.session,
     g_context.counter++,
+    event,
     (sqlite3_int64)(intptr_t)stmt,
     (sqlite3_int64)(intptr_t)sqlite3_db_handle(stmt),
     (sqlite3_int64)logged_time.tv_sec,
@@ -202,7 +204,7 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns)
   sqlite3_str_appendf(g_context.str, ",\"unexpanded\":\"");
   append_json_escaped(g_context.str, sqlite3_sql(stmt));
 
-#if 0
+#if 1
   sqlite3_str_appendf(g_context.str, "\",\"expanded\":\"");
 
   char* expanded = sqlite3_expanded_sql(stmt);
@@ -249,7 +251,7 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns)
       stmt, idx, SQLITE_SCANSTAT_NAME, SQLITE_SCANSTAT_COMPLEX, (void*)&name);
 
     char* explain = NULL;
-    int rc_explan = sqlite3_stmt_scanstatus_v2(stmt,
+    int rc_explain = sqlite3_stmt_scanstatus_v2(stmt,
                                                idx,
                                                SQLITE_SCANSTAT_EXPLAIN,
                                                SQLITE_SCANSTAT_COMPLEX,
@@ -275,6 +277,10 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns)
                                                SQLITE_SCANSTAT_NCYCLE,
                                                SQLITE_SCANSTAT_COMPLEX,
                                                (void*)&ncycle);
+
+    if (event == SQLITE_TRACE_STMT) {
+      explain = "https://sqlite.org/forum/forumpost/a6ffe28e5f";
+    }
 
     sqlite3_str_appendf(g_context.str,
                         "%s{"
@@ -336,12 +342,13 @@ trace_callback(unsigned T, void* C, void* P, void* X)
     case SQLITE_TRACE_STMT: {
       sqlite3_stmt* stmt = (sqlite3_stmt*)P;
       char* unexpanded = (char*)X;
+      record_scan_status(stmt, 0, SQLITE_TRACE_STMT);
       break;
     }
     case SQLITE_TRACE_PROFILE: {
       sqlite3_stmt* stmt = (sqlite3_stmt*)P;
       sqlite3_int64* took_ns = (sqlite3_int64*)X;
-      record_scan_status(stmt, *took_ns);
+      record_scan_status(stmt, *took_ns, SQLITE_TRACE_PROFILE);
       break;
     }
     case SQLITE_TRACE_ROW: {
@@ -413,7 +420,8 @@ xEntryPoint(sqlite3* db,
             const struct sqlite3_api_routines* pThunk)
 {
 
-  int rc = sqlite3_trace_v2(db, SQLITE_TRACE_PROFILE, trace_callback, NULL);
+  int rc = sqlite3_trace_v2(db,
+    SQLITE_TRACE_PROFILE|SQLITE_TRACE_STMT, trace_callback, NULL);
 
   // printf("xEntryPoint called\n");
 
