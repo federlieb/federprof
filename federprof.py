@@ -104,8 +104,10 @@ with base as (
         avg(memused),
     from
         read_ndjson_auto('logfile.gz', ignore_errors=true)
-    where
-        event = 2
+    -- NOTE: cannot filter for PROFILE events here if STMT events reset the
+    -- performance counters. 
+    -- where 
+    --     event = 2
     group by
         unexpanded,
         plan

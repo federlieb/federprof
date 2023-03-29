@@ -147,7 +147,7 @@ append_json_escaped(sqlite3_str* str, char const* s)
 }
 
 int
-record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns, int event)
+record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns, int event, int is_trigger)
 {
 
   int reset = 1;
@@ -227,6 +227,11 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns, int event)
 
   for (int idx = 0; /**/; ++idx) {
 
+    if (is_trigger && sqlite3_libversion_number() < 3042000) {
+      // https://sqlite.org/forum/forumpost/a6ffe28e5f
+      break;
+    }
+
     sqlite3_int64 nloop = -1;
     int rc_nloop = sqlite3_stmt_scanstatus_v2(
       stmt, idx, SQLITE_SCANSTAT_NLOOP, SQLITE_SCANSTAT_COMPLEX, (void*)&nloop);
@@ -277,10 +282,6 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns, int event)
                                                SQLITE_SCANSTAT_NCYCLE,
                                                SQLITE_SCANSTAT_COMPLEX,
                                                (void*)&ncycle);
-
-    if (event == SQLITE_TRACE_STMT) {
-      explain = "https://sqlite.org/forum/forumpost/a6ffe28e5f";
-    }
 
     sqlite3_str_appendf(g_context.str,
                         "%s{"
@@ -342,13 +343,19 @@ trace_callback(unsigned T, void* C, void* P, void* X)
     case SQLITE_TRACE_STMT: {
       sqlite3_stmt* stmt = (sqlite3_stmt*)P;
       char* unexpanded = (char*)X;
-      record_scan_status(stmt, 0, SQLITE_TRACE_STMT);
+
+      int is_trigger = 0;
+      if (unexpanded && unexpanded[0] == '-' && unexpanded[1] == '-') {
+        is_trigger = 1;
+      }
+
+      record_scan_status(stmt, 0, SQLITE_TRACE_STMT, is_trigger);
       break;
     }
     case SQLITE_TRACE_PROFILE: {
       sqlite3_stmt* stmt = (sqlite3_stmt*)P;
       sqlite3_int64* took_ns = (sqlite3_int64*)X;
-      record_scan_status(stmt, *took_ns, SQLITE_TRACE_PROFILE);
+      record_scan_status(stmt, *took_ns, SQLITE_TRACE_PROFILE, 0);
       break;
     }
     case SQLITE_TRACE_ROW: {
