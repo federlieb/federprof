@@ -4,10 +4,7 @@
 //   * could override `sqlite3_trace` and `sqlite3_trace_v2` so applications
 //     do not disable this profiler. But that might confuse them.
 //
-//   * if sqlite3_threadsafe, mutex when processing an event to avoid broken
-//     json lines?
-//
-//   * use kernel crypto to sha1 the SQLs and query plan for easier
+//   * use kernel crypto to sha1 the SQLs and (query plan - done) for easier
 //     post-processing?
 //
 //   * Make the library executable so users would use it to spawn applications
@@ -17,8 +14,6 @@
 //
 //   * Give this an option to filter out INSERT statements? Add documentation
 //     how this could easily be done by adding a filter to the pipe command?
-// 
-//   * Similarily, options to omit some of the SQL texts.
 
 #include <sqlite3.h>
 
@@ -204,6 +199,12 @@ struct context
   int buffer_size;
   FILE* log;
   struct timespec start_time;
+
+  sqlite3_mutex* mutex;
+
+  int want_expanded;
+  int want_unexpanded;
+  int want_normalized;
 };
 
 static struct context g_context = { 0 };
@@ -230,6 +231,11 @@ clear_context(struct context* ctx)
   if (ctx->log) {
     int rc = fclose(ctx->log);
     ctx->log = NULL;
+  }
+
+  if (ctx->mutex) {
+    sqlite3_mutex_free(ctx->mutex);
+    ctx->mutex = NULL;
   }
 }
 
@@ -310,6 +316,10 @@ int
 record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns, int event, int is_trigger)
 {
 
+  if (sqlite3_threadsafe()) {
+    sqlite3_mutex_enter(g_context.mutex);
+  }
+
   int reset = 1;
 
   struct timespec logged_time;
@@ -361,25 +371,33 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns, int event, int is_
     sqlite3_stmt_status(stmt, SQLITE_STMTSTATUS_MEMUSED, reset),
     took_ns);
 
-  sqlite3_str_appendf(g_context.str, ",\"unexpanded\":\"");
-  append_json_escaped(g_context.str, sqlite3_sql(stmt));
+  if (g_context.want_unexpanded) {
+    sqlite3_str_appendf(g_context.str, ",\"unexpanded\":\"");
+    append_json_escaped(g_context.str, sqlite3_sql(stmt));
+    sqlite3_str_appendchar(g_context.str, 1, '"');
+  }
 
-#if 1
-  sqlite3_str_appendf(g_context.str, "\",\"expanded\":\"");
+  if (g_context.want_expanded) {
+    sqlite3_str_appendf(g_context.str, ",\"expanded\":\"");
 
-  char* expanded = sqlite3_expanded_sql(stmt);
-  if (expanded) {
-    append_json_escaped(g_context.str, expanded);
-    sqlite3_free(expanded);
+    char* expanded = sqlite3_expanded_sql(stmt);
+    if (expanded) {
+      append_json_escaped(g_context.str, expanded);
+      sqlite3_free(expanded);
+    }
+    sqlite3_str_appendchar(g_context.str, 1, '"');
+
   }
 
 #ifdef SQLITE_ENABLE_NORMALIZE
-  sqlite3_str_appendf(g_context.str, "\",\"normalized\":\"");
-  append_json_escaped(g_context.str, sqlite3_normalized_sql(stmt));
-#endif
+  if (g_context.want_normalized) {
+    sqlite3_str_appendf(g_context.str, ",\"normalized\":\"");
+    append_json_escaped(g_context.str, sqlite3_normalized_sql(stmt));
+    sqlite3_str_appendchar(g_context.str, 1, '"');
+  }
 #endif
 
-  sqlite3_str_appendf(g_context.str, "\",\"scanstatus\":[");
+  sqlite3_str_appendf(g_context.str, ",\"scanstatus\":[");
 
   // printf("record_scan_status called\n");
 
@@ -501,6 +519,10 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns, int event, int is_
 
   sqlite3_str_reset(g_context.str);
 
+  if (sqlite3_threadsafe()) {
+    sqlite3_mutex_leave(g_context.mutex);
+  }
+
   return SQLITE_OK;
 }
 
@@ -580,6 +602,7 @@ init_context(struct context* ctx)
     ctx->session = strdup("...");
   }
 
+  // TODO: rename to FEDERPROF_PIPE or something like that.
   char* command = getenv("SQLITE_PROFILE_COMMAND");
 
   if (!command) {
@@ -596,6 +619,14 @@ init_context(struct context* ctx)
   ctx->buffer_size = 4096;
   ctx->buffer = sqlite3_malloc(ctx->buffer_size);
   ctx->buffer[0] = 0;
+
+  ctx->want_expanded = 1;
+  ctx->want_unexpanded = 1;
+  ctx->want_normalized = 1;
+
+  if (sqlite3_threadsafe()) {
+    ctx->mutex = sqlite3_mutex_alloc(SQLITE_MUTEX_FAST);
+  }
 }
 
 int
