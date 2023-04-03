@@ -29,9 +29,169 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 #include <time.h>
+#include <assert.h>
 #include <unistd.h>
+
+#include <sys/types.h>
+#include <linux/if_alg.h>
+#include <linux/socket.h>
+#include <sys/socket.h>
+
+struct sha1ctx {
+  int sock_fd;
+  int fd;
+};
+
+void
+sha1_destroy(struct sha1ctx* ctx) {
+  if (!ctx) {
+    return;
+  }
+
+  if (ctx->fd >= 0) {
+    close(ctx->fd);
+  }
+
+  if (ctx->sock_fd >= 0) {
+    close(ctx->sock_fd);
+  }
+
+  free(ctx);
+}
+
+struct sha1ctx*
+sha1_new(void) {
+
+  struct sha1ctx *ctx = calloc(1, sizeof(*ctx));
+
+  if (!ctx) {
+    goto error;
+  }
+
+  struct sockaddr_alg sa_alg;
+  memset(&sa_alg, 0, sizeof(sa_alg));
+
+  sa_alg.salg_family = AF_ALG;
+
+  memcpy(sa_alg.salg_type, "hash", 5);
+  memcpy(sa_alg.salg_name, "sha1", 5);
+
+  ctx->sock_fd = socket(AF_ALG, SOCK_SEQPACKET, 0);
+
+  if (ctx->sock_fd < 0) {
+    goto error;
+  }
+
+  int bind_rc = bind(ctx->sock_fd, (struct sockaddr*)&sa_alg, sizeof(sa_alg));
+
+  if (bind_rc) {
+    goto error;
+  }
+
+  ctx->fd = accept(ctx->sock_fd, NULL, 0);
+
+  if (ctx->fd < 0) {
+    goto error;
+  }
+
+  return ctx;
+
+error:
+  sha1_destroy(ctx);
+  return NULL;
+}
+
+int
+sha1_add(struct sha1ctx* ctx, void const* const data, ssize_t size) {
+
+  if (size < 0) {
+    goto error;
+  }
+
+  if (!ctx) {
+    goto error;
+  }
+
+  ssize_t written = write(ctx->fd, data, (size_t)size);
+
+  if (written != size) {
+    // FIXME: error handling
+    goto error;
+  }
+
+  return 0;
+
+error:
+
+  return 1;
+
+}
+
+char*
+sha1_hash(struct sha1ctx* ctx) {
+  static const int size = 20;
+
+  char* hash = malloc(size);
+
+  if (!ctx) {
+    goto error;
+  }
+
+  if (!hash) {
+    goto error;
+  }
+
+  size_t read_ = read(ctx->fd, hash, size);
+
+  if (read_ != size) {
+    goto error;
+  }
+
+  return hash;
+
+error:
+  if (hash) {
+    free(hash);
+  }
+
+  return NULL;
+}
+
+char*
+sha1_hex(struct sha1ctx* ctx) {
+  char* hash = sha1_hash(ctx);
+
+  char* hex = malloc(41);
+
+  if (!hash) {
+    goto error;
+  }
+
+  if (!hex) {
+    goto error;
+  }
+
+  for (char* h = hash, *out = hex; (h - hash) < 20; ++h) {
+    *out++ = "0123456789abcdef"[(unsigned char)(*h) >> 4];
+    *out++ = "0123456789abcdef"[(unsigned char)(*h) & 0xf];
+  }
+
+  hex[40] = 0;
+
+  free(hash);
+
+  return hex;
+
+error:
+
+  if (hash) {
+    free(hash);
+  }
+
+  return NULL;
+
+}
 
 struct context
 {
@@ -225,6 +385,8 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns, int event, int is_
 
 #ifdef SQLITE_ENABLE_STMT_SCANSTATUS
 
+  struct sha1ctx *plan_digest = sha1_new();
+
   for (int idx = 0; /**/; ++idx) {
 
     if (is_trigger && sqlite3_libversion_number() < 3042000) {
@@ -283,6 +445,12 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns, int event, int is_
                                                SQLITE_SCANSTAT_COMPLEX,
                                                (void*)&ncycle);
 
+    sha1_add(plan_digest, &idx, sizeof(idx));
+    sha1_add(plan_digest, &selectid, sizeof(selectid));
+    sha1_add(plan_digest, &parentid, sizeof(parentid));
+    sha1_add(plan_digest, name, name ? strlen(name) + 1 : 0);
+    sha1_add(plan_digest, explain, explain ? strlen(explain) + 1 : 0);
+
     sqlite3_str_appendf(g_context.str,
                         "%s{"
                         "\"idx\":%d"
@@ -313,7 +481,16 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns, int event, int is_
 
 #endif
 
-  sqlite3_str_appendf(g_context.str, "]}\n");
+  sqlite3_str_appendf(g_context.str, "]");
+
+#ifdef SQLITE_ENABLE_STMT_SCANSTATUS
+  char* plan_hex = sha1_hex(plan_digest);
+  sqlite3_str_appendf(g_context.str, ",\"plan\":\"%s\"", plan_hex);
+  free(plan_hex);
+  sha1_destroy(plan_digest);
+#endif
+
+  sqlite3_str_appendf(g_context.str, "}\n");
 
   if (SQLITE_OK != sqlite3_str_errcode(g_context.str)) {
     fprintf(stderr, "error writing profile log entry\n");
