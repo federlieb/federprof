@@ -205,6 +205,7 @@ struct context
   int want_expanded;
   int want_unexpanded;
   int want_normalized;
+  int want_triggers;
 };
 
 static struct context g_context = { 0 };
@@ -239,6 +240,25 @@ clear_context(struct context* ctx)
   }
 }
 
+static char const json_escape[] = {
+  1, 1, 1, 1, 1, 1, 1, 1, 'b', 't', 'n', 1, 'f', 'r', 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+  0, 0, '"', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '\\', 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+
 void
 append_json_escaped(sqlite3_str* str, char const* s)
 {
@@ -261,46 +281,23 @@ append_json_escaped(sqlite3_str* str, char const* s)
       break;
     }
 
-    switch (*s) {
-      case '\b':
-        *out++ = '\\';
-        *out++ = 'b';
+    unsigned char ch = (unsigned char)*s;
+
+    switch (json_escape[ch]) {
+      case 0:
+        *out++ = ch;
         break;
-      case '\t':
+      case 1:
         *out++ = '\\';
-        *out++ = 't';
-        break;
-      case '\n':
-        *out++ = '\\';
-        *out++ = 'n';
-        break;
-      case '\f':
-        *out++ = '\\';
-        *out++ = 'f';
-        break;
-      case '\r':
-        *out++ = '\\';
-        *out++ = 'r';
-        break;
-      case '\"':
-        *out++ = '\\';
-        *out++ = '"';
-        break;
-      case '\\':
-        *out++ = '\\';
-        *out++ = '\\';
+        *out++ = 'u';
+        *out++ = '0';
+        *out++ = '0';
+        *out++ = '0' + (ch >> 4);
+        *out++ = "0123456789abcdef"[ch & 0xf];
         break;
       default:
-        if (*s < 0x20) {
-          *out++ = '\\';
-          *out++ = 'u';
-          *out++ = '0';
-          *out++ = '0';
-          *out++ = '0' + (*s >> 4);
-          *out++ = "0123456789abcdef"[*s & 0xf];
-        } else {
-          *out++ = *s;
-        }
+        *out++ = '\\';
+        *out++ = json_escape[ch];
         break;
     }
 
@@ -381,6 +378,8 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns, int event, int is_
     sqlite3_str_appendf(g_context.str, ",\"expanded\":\"");
 
     char* expanded = sqlite3_expanded_sql(stmt);
+    
+    // TODO: ought to pass generate `null` instead of empty string
     if (expanded) {
       append_json_escaped(g_context.str, expanded);
       sqlite3_free(expanded);
@@ -548,6 +547,10 @@ trace_callback(unsigned T, void* C, void* P, void* X)
         is_trigger = 1;
       }
 
+      if (is_trigger && !g_context.want_triggers) {
+        break;
+      }
+
       record_scan_status(stmt, 0, SQLITE_TRACE_STMT, is_trigger);
       break;
     }
@@ -623,6 +626,7 @@ init_context(struct context* ctx)
   ctx->want_expanded = 1;
   ctx->want_unexpanded = 1;
   ctx->want_normalized = 1;
+  ctx->want_triggers = 0;
 
   if (sqlite3_threadsafe()) {
     ctx->mutex = sqlite3_mutex_alloc(SQLITE_MUTEX_FAST);

@@ -20,20 +20,6 @@ db = duckdb.connect(":memory:")
 db.execute(
     """
 
-create or replace macro plan_md5(scanstatus) as
-md5(
-    list_transform(
-        scanstatus,
-        x -> json_array(x.idx, x.selectid, x.parentid, x.name, x.explain)
-    )
-)
-
-"""
-)
-
-db.execute(
-    """
-
 create or replace macro plan_agg(plans) as (
     with
     l1 as ( select unnest(plans) as plan ),
@@ -52,24 +38,8 @@ create or replace macro plan_agg(plans) as (
         } as x
         from l2
         group by item.idx, item.selectid, item.parentid, item.explain, item.name
-    ),
-    l4 as (
-        select {
-            'idx':      x.idx,
-            'selectid': x.selectid,
-            'parentid': x.parentid,
-            'name':     x.name,
-            'explain':  x.explain,
-            'nloop':    x.nloop,
-            'nvisit':   x.nvisit,
-            'est':      x.est,
-            'ncycle':   x.ncycle,
-            'ncycle_p': printf( '%2.2f%%', 100*((1.0 * x.ncycle) / sum(x.ncycle) over ()) ),
-            'nvisit_p': printf( '%2.2f%%', 100*((1.0 * x.nvisit) / sum(x.nvisit) over ()) ),
-        } as x
-        from l3
     )
-    select list(x order by x.idx) from l4 group by null
+    select list(x order by x.idx) from l3 group by null
 )
 
 """
@@ -81,33 +51,19 @@ result = duckdb.sql(
 
 with base as (
     select
-        cast(sum(vm_step) as int128) as "sum(vm_step)",
-        cast(sum(run) as int128) as "sum(run)",
+        sum(cast(vm_step as int128)) as "sum(vm_step)",
+        sum(cast(run as int128)) as "sum(run)",
         sum(took_ns) * 1.0e-9 as "sum(took_seconds)",
-        sum(list_aggregate(list_transform(scanstatus, x -> x.nvisit), 'sum'))
-            as "sum(nvisit)",
-        sum(list_aggregate(list_transform(scanstatus, x -> x.ncycle), 'sum'))
-            as "sum(ncycle)",
-        sum(list_aggregate(list_transform(scanstatus, x -> x.est), 'sum'))
-            as "sum(est)",
-        sum(list_aggregate(list_transform(scanstatus, x -> x.nloop), 'sum'))
-            as "sum(nloop)",
-        plan_md5(scanstatus) as plan,
         unexpanded,
-        to_json(plan_agg(list(scanstatus))) as scanstatus,
+        plan_agg(list(scanstatus)) as scanstatus_struct,
         sum(fullscan_step),
         sum(sort),
         sum(autoindex),
         sum(reprepare),
         sum(filter_miss),
         sum(filter_hit),
-        avg(memused),
     from
         read_ndjson_auto('logfile.gz', ignore_errors=true)
-    -- NOTE: cannot filter for PROFILE events here if STMT events reset the
-    -- performance counters. 
-    -- where 
-    --     event = 2
     group by
         unexpanded,
         plan
@@ -116,7 +72,12 @@ with base as (
     limit 40
 )
 select
-    *
+    *,
+    to_json(scanstatus_struct) as scanstatus,
+    list_aggregate(list_transform(scanstatus_struct, x -> x.nloop), 'sum') as "sum(nloop)",
+    list_aggregate(list_transform(scanstatus_struct, x -> x.nvisit), 'sum') as "sum(nvisit)",
+    list_aggregate(list_transform(scanstatus_struct, x -> x.ncycle), 'sum') as "sum(ncycle)",
+    list_aggregate(list_transform(scanstatus_struct, x -> x.est), 'sum') as "sum(est)",
 from
     base
 order by
@@ -164,6 +125,9 @@ def scanstatus_to_table(ss):
 
     t = Table(box=box.SIMPLE_HEAD, show_lines=False, min_width=120, highlight=True)
 
+    ncycle_sum = 0
+    nvisit_sum = 0
+
     for cell in data:
         cell["explain"] = ("  " * (cell.get("posx") - 1)) + cell["explain"]
         cell["explain"] = Text(cell["explain"], overflow="ellipsis", no_wrap=True)
@@ -174,11 +138,24 @@ def scanstatus_to_table(ss):
 
         if cell.get("nvisit"):
             details += f" nvisit={to_rich(int(cell['nvisit']))}"
+            nvisit_sum += int(cell['nvisit'])
+
+        if cell.get("ncycle"):
+            ncycle_sum += int(cell['ncycle'])
 
         if cell.get("est"):
             details += f" est={to_rich(int(cell['est']))}"
 
         cell["explain"].append(details, style="dim")
+
+    for cell in data:
+        cell["ncycle_p"] = None
+        if cell.get("ncycle") is not None:
+            cell["ncycle_p"] = 100.0 * int(cell.get("ncycle")) / ncycle_sum 
+
+        cell["nvisit_p"] = None
+        if cell.get("nvisit") is not None:
+            cell["nvisit_p"] = 100.0 * int(cell.get("nvisit")) / nvisit_sum 
 
         for k, v in cell.items():
             if v is None:
@@ -259,7 +236,6 @@ for row in result.fetchall():
         'sum(reprepare)',
         'sum(filter_miss)',
         'sum(filter_hit)',
-        'avg(memused)',
         'sum(nvisit)',
         'sum(est)',
         'sum(nloop)',
