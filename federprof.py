@@ -49,39 +49,53 @@ create or replace macro plan_agg(plans) as (
 result = duckdb.sql(
     query="""
 
-with base as (
+with
+agg1 as (
     select
-        sum(cast(vm_step as int128)) as "sum(vm_step)",
-        sum(cast(run as int128)) as "sum(run)",
-        sum(took_ns) * 1.0e-9 as "sum(took_seconds)",
-        unexpanded,
-        plan_agg(list(scanstatus)) as scanstatus_struct,
-        sum(fullscan_step),
-        sum(sort),
-        sum(autoindex),
-        sum(reprepare),
-        sum(filter_miss),
-        sum(filter_hit),
+        sum(cast(vm_step as int128))       as "vm_step",
+        sum(cast(run as int128))           as "run",
+        sum(took_ns) * 1.0e-9              as "took_seconds",
+        unexpanded                         as "unexpanded",
+        plan_agg(list(scanstatus))         as "scanstatus_s",
+        sum(cast(fullscan_step as int128)) as "fullscan_step",
+        sum(cast(sort as int128))          as "sort",
+        sum(cast(autoindex as int128))     as "autoindex",
+        sum(cast(reprepare as int128))     as "reprepare",
+        sum(cast(filter_miss as int128))   as "filter_miss",
+        sum(cast(filter_hit as int128))    as "filter_hit",
     from
         read_ndjson_auto('logfile.gz', ignore_errors=true)
     group by
         unexpanded,
         plan
+),
+agg2 as (
+    select
+        *,
+        to_json(base.scanstatus_s) as scanstatus,
+        list_aggregate(list_transform(base.scanstatus_s, x -> x.nloop), 'sum')  as "nloop",
+        list_aggregate(list_transform(base.scanstatus_s, x -> x.nvisit), 'sum') as "nvisit",
+        list_aggregate(list_transform(base.scanstatus_s, x -> x.ncycle), 'sum') as "ncycle",
+        list_aggregate(list_transform(base.scanstatus_s, x -> x.est), 'sum')    as "est",
+    from
+        agg1 base
+),
+top as (
+    select
+        *
+    from
+        agg2
     order by
-        "sum(vm_step)" desc nulls last
-    limit 40
+        vm_step desc nulls last
+    limit
+        40
 )
 select
-    *,
-    to_json(scanstatus_struct) as scanstatus,
-    list_aggregate(list_transform(scanstatus_struct, x -> x.nloop), 'sum') as "sum(nloop)",
-    list_aggregate(list_transform(scanstatus_struct, x -> x.nvisit), 'sum') as "sum(nvisit)",
-    list_aggregate(list_transform(scanstatus_struct, x -> x.ncycle), 'sum') as "sum(ncycle)",
-    list_aggregate(list_transform(scanstatus_struct, x -> x.est), 'sum') as "sum(est)",
+    *
 from
-    base
+    top
 order by
-    "sum(vm_step)" asc nulls first
+    "vm_step" asc nulls first
 
     """,
     connection=db,
@@ -123,7 +137,7 @@ def scanstatus_to_table(ss):
 
     reorder_eqp(data, {"selectid": 0}, 0, 0)
 
-    t = Table(box=box.SIMPLE_HEAD, show_lines=False, min_width=120, highlight=True)
+    t = Table(box=box.SIMPLE, show_lines=False, min_width=120, highlight=True, show_footer=True)
 
     ncycle_sum = 0
     nvisit_sum = 0
@@ -151,11 +165,11 @@ def scanstatus_to_table(ss):
     for cell in data:
         cell["ncycle_p"] = None
         if cell.get("ncycle") is not None:
-            cell["ncycle_p"] = 100.0 * int(cell.get("ncycle")) / ncycle_sum 
+            cell["ncycle_p"] = 100.0 * int(cell.get("ncycle")) / ncycle_sum if ncycle_sum > 0 else None
 
         cell["nvisit_p"] = None
         if cell.get("nvisit") is not None:
-            cell["nvisit_p"] = 100.0 * int(cell.get("nvisit")) / nvisit_sum 
+            cell["nvisit_p"] = 100.0 * int(cell.get("nvisit")) / nvisit_sum if nvisit_sum > 0 else None
 
         for k, v in cell.items():
             if v is None:
@@ -174,8 +188,9 @@ def scanstatus_to_table(ss):
         "explain",
     ]
 
-    for col in order:
-        t.add_column(col)
+    t.add_column("ncycle_p", to_rich(ncycle_sum))
+    t.add_column("nvisit_p", to_rich(nvisit_sum))
+    t.add_column("explain", "")
 
     for node in sorted(data, key=lambda y: (y.get("posz"))):
         t.add_row(*[to_rich(node.get(x)) for x in order])
@@ -183,8 +198,8 @@ def scanstatus_to_table(ss):
     t.columns[0].justify = "right"
     t.columns[1].justify = "right"
 
-    t.columns[0].width = 8
-    t.columns[1].width = 8
+    t.columns[0].width = 10
+    t.columns[1].width = 10
     t.columns[2].width = 74
 
     return t
@@ -193,7 +208,6 @@ def scanstatus_to_table(ss):
 t = Table(box=box.ROUNDED, show_lines=True, highlight=True)
 
 selection = (
-    "sum(took_seconds)",
     "stats",
     "sql+eqp",
 )
@@ -203,7 +217,7 @@ for col in selection:
 
 for row in result.fetchall():
 
-    data = dict(zip(result.columns, [to_rich(x) for x in row]))
+    data = dict(zip(result.columns, [(x) for x in row]))
     type = dict(zip(result.columns, result.dtypes))
 
     data["unexpanded"] = Syntax(
@@ -224,35 +238,37 @@ for row in result.fetchall():
 
     data["sql+eqp"] = sql_eqp
 
-    stats = Table(show_header=False)
+    stats = Table(show_header=True, box=box.SIMPLE)
+    stats.add_column("metric")
+    stats.add_column("sum")
 
     sel2 = (
-        'sum(vm_step)',
-        'sum(ncycle)',
-        'sum(run)',
-        'sum(fullscan_step)',
-        'sum(sort)',
-        'sum(autoindex)',
-        'sum(reprepare)',
-        'sum(filter_miss)',
-        'sum(filter_hit)',
-        'sum(nvisit)',
-        'sum(est)',
-        'sum(nloop)',
-        'sum(took_seconds)'
+        'took_seconds',
+        'vm_step',
+        'run',
+        'fullscan_step',
+        'sort',
+        'autoindex',
+        'reprepare',
+        'filter_miss',
+        'filter_hit',
+        'nloop',
+        'nvisit',
+        'ncycle',
+        'est',
     )
 
     for h in sel2:
-        stats.add_row(h, data[h])
+        stats.add_row(h, to_rich(data[h]))
 
     data["stats"] = stats
 
     t.add_row(*[data[k] for k in selection])
 
-t.columns[2].style = rich.style.Style(bgcolor="#1e1e1e")
-t.columns[2].vertical = "middle"
+t.columns[1].style = rich.style.Style(bgcolor="#1e1e1e")
 t.columns[1].vertical = "middle"
 t.columns[0].vertical = "middle"
-t.columns[0].justify = "center"
+# t.columns[0].vertical = "middle"
+# t.columns[0].justify = "center"
 
 Console().print(t)

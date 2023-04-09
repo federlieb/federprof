@@ -292,7 +292,7 @@ append_json_escaped(sqlite3_str* str, char const* s)
         *out++ = 'u';
         *out++ = '0';
         *out++ = '0';
-        *out++ = '0' + (ch >> 4);
+        *out++ = "0123456789abcdef"[ch >> 4];
         *out++ = "0123456789abcdef"[ch & 0xf];
         break;
       default:
@@ -562,6 +562,7 @@ trace_callback(unsigned T, void* C, void* P, void* X)
     }
     case SQLITE_TRACE_ROW: {
       sqlite3_stmt* stmt = (sqlite3_stmt*)P;
+      record_scan_status(stmt, 0, SQLITE_TRACE_ROW, 0);
       break;
     }
     case SQLITE_TRACE_CLOSE: {
