@@ -25,21 +25,34 @@ create or replace macro plan_agg(plans) as (
     l1 as ( select unnest(plans) as plan ),
     l2 as ( select unnest(plan) as item from l1 ),
     l3 as (
-        select {
-            'idx':      item.idx,
-            'selectid': item.selectid,
-            'parentid': item.parentid,
-            'name':     item.name,
-            'explain':  item.explain,
-            'nloop':    sum(case when item.nloop <> -1 then item.nloop else null end),
-            'nvisit':   sum(case when item.nvisit <> -1 then item.nvisit else null end),
-            'est':      sum(case when item.est <> -1 then item.est else null end),
-            'ncycle':   sum(case when item.ncycle <> -1 then item.ncycle else null end),
-        } as x
-        from l2
-        group by item.idx, item.selectid, item.parentid, item.explain, item.name
+        select
+            {
+                'idx':      item.idx,
+                'selectid': item.selectid,
+                'parentid': item.parentid,
+                'name':     item.name,
+                'explain':  item.explain,
+                'nloop':    sum(case when item.nloop <> -1 then item.nloop else null end),
+                'nvisit':   sum(case when item.nvisit <> -1 then item.nvisit else null end),
+                -- TODO: does not really make sense to sum est?
+                'est':      sum(case when item.est <> -1 then item.est else null end),
+                'ncycle':   sum(case when item.ncycle <> -1 then item.ncycle else null end),
+            } as x
+        from
+            l2
+        group by
+            item.idx,
+            item.selectid,
+            item.parentid,
+            item.explain,
+            item.name
     )
-    select list(x order by x.idx) from l3 group by null
+    select
+        list(x order by x.idx)
+    from
+        l3
+    group by
+        null
 )
 
 """
@@ -56,7 +69,7 @@ agg1 as (
         sum(cast(run as int128))           as "run",
         sum(took_ns) * 1.0e-9              as "took_seconds",
         unexpanded                         as "unexpanded",
-        plan_agg(list(scanstatus))         as "scanstatus_s",
+        plan_agg(list(scanstatus))         as "scanstatus",
         sum(cast(fullscan_step as int128)) as "fullscan_step",
         sum(cast(sort as int128))          as "sort",
         sum(cast(autoindex as int128))     as "autoindex",
@@ -72,11 +85,10 @@ agg1 as (
 agg2 as (
     select
         *,
-        to_json(base.scanstatus_s) as scanstatus,
-        list_aggregate(list_transform(base.scanstatus_s, x -> x.nloop), 'sum')  as "nloop",
-        list_aggregate(list_transform(base.scanstatus_s, x -> x.nvisit), 'sum') as "nvisit",
-        list_aggregate(list_transform(base.scanstatus_s, x -> x.ncycle), 'sum') as "ncycle",
-        list_aggregate(list_transform(base.scanstatus_s, x -> x.est), 'sum')    as "est",
+        list_aggregate(list_transform(base.scanstatus, x -> x.nloop), 'sum')  as "nloop",
+        list_aggregate(list_transform(base.scanstatus, x -> x.nvisit), 'sum') as "nvisit",
+        list_aggregate(list_transform(base.scanstatus, x -> x.ncycle), 'sum') as "ncycle",
+        list_aggregate(list_transform(base.scanstatus, x -> x.est), 'sum')    as "est",
     from
         agg1 base
 ),
@@ -128,12 +140,10 @@ def to_rich(value):
     return value
 
 
-def scanstatus_to_table(ss):
+def scanstatus_to_table(data):
 
-    if ss is None:
+    if data is None:
         return None
-
-    data = json.loads(ss)
 
     reorder_eqp(data, {"selectid": 0}, 0, 0)
 
@@ -163,13 +173,13 @@ def scanstatus_to_table(ss):
         cell["explain"].append(details, style="dim")
 
     for cell in data:
-        cell["ncycle_p"] = None
+        cell["ncycle %"] = None
         if cell.get("ncycle") is not None:
-            cell["ncycle_p"] = 100.0 * int(cell.get("ncycle")) / ncycle_sum if ncycle_sum > 0 else None
+            cell["ncycle %"] = 100.0 * int(cell.get("ncycle")) / ncycle_sum if ncycle_sum > 0 else None
 
-        cell["nvisit_p"] = None
+        cell["nvisit %"] = None
         if cell.get("nvisit") is not None:
-            cell["nvisit_p"] = 100.0 * int(cell.get("nvisit")) / nvisit_sum if nvisit_sum > 0 else None
+            cell["nvisit %"] = 100.0 * int(cell.get("nvisit")) / nvisit_sum if nvisit_sum > 0 else None
 
         for k, v in cell.items():
             if v is None:
@@ -183,13 +193,13 @@ def scanstatus_to_table(ss):
         # "name",
         # "selectid",
         # "parentid",
-        "ncycle_p",
-        "nvisit_p",
+        "ncycle %",
+        "nvisit %",
         "explain",
     ]
 
-    t.add_column("ncycle_p", to_rich(ncycle_sum))
-    t.add_column("nvisit_p", to_rich(nvisit_sum))
+    t.add_column("ncycle %", to_rich(ncycle_sum))
+    t.add_column("nvisit %", to_rich(nvisit_sum))
     t.add_column("explain", "")
 
     for node in sorted(data, key=lambda y: (y.get("posz"))):
@@ -243,8 +253,8 @@ for row in result.fetchall():
     stats.add_column("sum")
 
     sel2 = (
-        'took_seconds',
         'vm_step',
+        'took_seconds',
         'run',
         'fullscan_step',
         'sort',

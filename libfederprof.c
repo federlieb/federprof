@@ -206,6 +206,7 @@ struct context
   int want_unexpanded;
   int want_normalized;
   int want_triggers;
+  int want_read_write;
 };
 
 static struct context g_context = { 0 };
@@ -312,6 +313,10 @@ append_json_escaped(sqlite3_str* str, char const* s)
 int
 record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns, int event, int is_trigger)
 {
+
+  if (!g_context.want_read_write && !sqlite3_stmt_readonly(stmt)) {
+    return;
+  }
 
   if (sqlite3_threadsafe()) {
     sqlite3_mutex_enter(g_context.mutex);
@@ -628,6 +633,7 @@ init_context(struct context* ctx)
   ctx->want_unexpanded = 1;
   ctx->want_normalized = 1;
   ctx->want_triggers = 0;
+  ctx->want_read_write = 1;
 
   if (sqlite3_threadsafe()) {
     ctx->mutex = sqlite3_mutex_alloc(SQLITE_MUTEX_FAST);
