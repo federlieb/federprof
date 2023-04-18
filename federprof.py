@@ -8,6 +8,7 @@ from rich import box
 from rich.text import Text
 from rich.syntax import Syntax
 import json
+import itertools
 
 typemap = {
     "DOUBLE": str,
@@ -81,34 +82,17 @@ agg1 as (
     group by
         unexpanded,
         plan
-),
-agg2 as (
-    select
-        *,
-        list_aggregate(list_transform(base.scanstatus, x -> x.nloop), 'sum')  as "nloop",
-        list_aggregate(list_transform(base.scanstatus, x -> x.nvisit), 'sum') as "nvisit",
-        list_aggregate(list_transform(base.scanstatus, x -> x.ncycle), 'sum') as "ncycle",
-        list_aggregate(list_transform(base.scanstatus, x -> x.est), 'sum')    as "est",
-    from
-        agg1 base
-),
-top as (
-    select
-        *
-    from
-        agg2
-    order by
-        vm_step desc nulls last
-    limit
-        40
 )
 select
-    *
+    agg1.*,
+    list_aggregate(list_transform(agg1.scanstatus, x -> x.nloop), 'sum')  as "nloop",
+    list_aggregate(list_transform(agg1.scanstatus, x -> x.nvisit), 'sum') as "nvisit",
+    list_aggregate(list_transform(agg1.scanstatus, x -> x.ncycle), 'sum') as "ncycle",
+    list_aggregate(list_transform(agg1.scanstatus, x -> x.est), 'sum')    as "est",
 from
-    top
+    agg1
 order by
-    "vm_step" asc nulls first
-
+    vm_step desc nulls last
     """,
     connection=db,
 )
@@ -225,7 +209,7 @@ selection = (
 for col in selection:
     t.add_column(col)
 
-for row in result.fetchall():
+for row in reversed(list(itertools.islice(result.fetchall(), 40))):
 
     data = dict(zip(result.columns, [(x) for x in row]))
     type = dict(zip(result.columns, result.dtypes))

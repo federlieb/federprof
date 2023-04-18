@@ -14,6 +14,9 @@
 //
 //   * Give this an option to filter out INSERT statements? Add documentation
 //     how this could easily be done by adding a filter to the pipe command?
+//
+//   * extension function to enable/disable data collection at runtime?
+//   
 
 #include <sqlite3.h>
 
@@ -272,8 +275,9 @@ append_json_escaped(sqlite3_str* str, char const* s)
 
   while (*s) {
 
-    if ((out - g_context.buffer) > (g_context.buffer_size - 7)) {
-      // FIXME: buffer might not have enough free space for this:
+    // The ellipsis requires 5 bytes and the longest escape sequence
+    // requires 6 bytes plus a terminating null character at the end.
+    if ((out - g_context.buffer) > (g_context.buffer_size - 12)) {
       *out++ = '[';
       *out++ = '.';
       *out++ = '.';
@@ -315,7 +319,7 @@ record_scan_status(sqlite3_stmt* stmt, sqlite3_int64 took_ns, int event, int is_
 {
 
   if (!g_context.want_read_write && !sqlite3_stmt_readonly(stmt)) {
-    return;
+    return SQLITE_OK;
   }
 
   if (sqlite3_threadsafe()) {
